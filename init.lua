@@ -54,7 +54,17 @@ vim.keymap.set("n", "<C-j>", "<C-w>j")
 vim.keymap.set("n", "<C-k>", "<C-w>k")
 vim.keymap.set("n", "<C-l>", "<C-w>l")
 
-vim.keymap.set("n", "<leader>cc", ":cclose<CR>", {desc="Close quick fix window"})  -- close quickfix
+--vim.keymap.set("n", "<leader>cc", ":cclose<CR>", {desc="Close quick fix window"})  -- close quickfix
+vim.keymap.set("n", "<leader>cc", function()
+  vim.cmd("cclose")  -- close quickfix
+  -- also close any terminal window at the bottom
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    if vim.bo[buf].buftype == "terminal" and win ~= term_win then
+      vim.api.nvim_win_close(win, true)
+    end
+  end
+end, { desc = "Close quickfix/output" })
 
 require("lazy").setup({
    {"stevearc/dressing.nvim"},
@@ -66,6 +76,7 @@ require("lazy").setup({
       require("mason").setup()
     end
   },
+{ "windwp/nvim-autopairs", event = "InsertEnter", opts = {} },
   {
     "williamboman/mason-lspconfig.nvim",
     dependencies = { "mason.nvim" },
@@ -528,7 +539,7 @@ dapui.setup({
     edit = "e",
     repl = "r",
     toggle = "t",
-  },   
+  },
   layouts = {
     {
       elements = {
@@ -542,8 +553,8 @@ dapui.setup({
     },
     {
       elements = {
-        { id = "repl",    size = 1 },
-        --{ id = "console", size = 0.5 },
+        { id = "console", size = 0.50},
+        { id = "repl",    size = 0.50 },
       },
       size = 10,
       position = "bottom",
@@ -574,6 +585,43 @@ dapui.setup({
 dap.listeners.after.event_initialized["dapui_config"] = function() dapui.open() end
 dap.listeners.before.event_terminated["dapui_config"] = function() dapui.close() end
 dap.listeners.before.event_disconnect["dapui_config"] = function() dapui.close() end
+
+local output_float_win = nil
+local output_float_buf = nil
+
+vim.keymap.set("n", "<leader>do", function()
+  -- close if already open
+  if output_float_win and vim.api.nvim_win_is_valid(output_float_win) then
+    vim.api.nvim_win_close(output_float_win, true)
+    output_float_win = nil
+    output_float_buf = nil
+    return
+  end
+
+  local cfg = _G.current_debug_config
+  if not cfg or cfg.type ~= "remote" then return end
+  local sshpass = "sshpass -p '" .. cfg.target_password .. "' "
+  local ssh = sshpass .. "ssh -o StrictHostKeyChecking=no " .. cfg.target_user .. "@" .. cfg.target_ip
+  
+  output_float_buf = vim.api.nvim_create_buf(false, true)
+  local width = math.floor(vim.o.columns * 0.5)
+  local height = math.floor(vim.o.lines * 0.3)
+  output_float_win = vim.api.nvim_open_win(output_float_buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = vim.o.lines - height - 2,
+    col = math.floor(vim.o.columns * 0.5),
+    style = "minimal",
+    border = "rounded",
+    title = " Program Output ",
+    title_pos = "center",
+  })
+  vim.cmd("term " .. ssh .. " 'tail -f /tmp/gdbserver.log'")
+  vim.cmd("normal! G")
+  vim.cmd("wincmd p")
+end, { desc = "Toggle remote output" })
+
 
 require("dap").set_log_level("DEBUG")
 
@@ -608,176 +656,6 @@ local function select_debug_config()
     end
   end)
 end
-
---local current_debug_config = debug_configs[1]  -- local to the file, visible to all
-                                                -- functions defined in the same file
---local function launch_debug()
---  if not current_debug_config then
---    vim.notify("No debug config loaded. Add a .nvim.lua to your project root.", vim.log.levels.ERROR)
---    return
---  end
---  local cfg = current_debug_config
---  local sshpass = "sshpass -p '" .. cfg.target_password .. "' "
---  local ssh = sshpass .. "ssh -o StrictHostKeyChecking=no " .. cfg.target_user .. "@" .. cfg.target_ip
---
---  vim.notify("Killing existing gdbserver...", vim.log.levels.INFO)
---  os.execute(ssh .. " 'killall gdbserver' 2>/dev/null")
---  os.execute(ssh .. " 'killall " .. vim.fn.fnamemodify(cfg.binary_remote, ":t") .. "' 2>/dev/null")
---
---  vim.notify("Starting gdbserver...", vim.log.levels.INFO)
---  os.execute(ssh .. " 'DISPLAY=:0.0 nohup gdbserver 0.0.0.0:" .. cfg.target_port .. " " .. cfg.binary_remote .. " > /tmp/gdbserver.log 2>&1 &'")
---
---  vim.defer_fn(function()
---    local check = os.execute(ssh .. " 'ps | grep [g]dbserver > /dev/null 2>&1'")
---    if check ~= 0 then
---      vim.notify("gdbserver failed to start! Check /tmp/gdbserver.log on target.", vim.log.levels.ERROR)
---      return
---    end
---
---    vim.notify("gdbserver running, connecting...", vim.log.levels.INFO)
---    require("dap").run({
---      name    = cfg.name,
---      type    = "cppdbg",
---      request = "launch",
---      program = cfg.binary_local,
---      miDebuggerPath = cfg.miDebuggerPath,
---      miDebuggerServerAddress = cfg.target_ip .. ":" .. cfg.target_port,
---      cwd     = "${workspaceFolder}",
---      stopAtEntry = false,
---      filterStderr = false,
---      filterStdout = false,
---      exceptionHandling = {
---        exceptionBreakpointFilters = {}
---      },
---      logging = {
---        engineLogging = false,
---        traceResponse = false,
---      },
---      setupCommands = {
---        {
---          description    = "Load .gdbinit",
---          text           = cfg.gdbinitPath,
---          ignoreFailures = true,
---        },
---        {
---          description    = "Enable pretty printing",
---          text           = "set print pretty on",
---          ignoreFailures = false,
---        },
---        {
---          description = "Enable dynamic pretty printing",
---          text = "-enable-pretty-printing",
---          ignoreFailures = false,
---        },
---      },
---    })
---  end, 2000)
---end
---local function launch_debug()
---  if not _G.current_debug_config then
---    vim.notify("No debug config loaded. Add a .nvim.lua to your project root.", vim.log.levels.ERROR)
---    return
---  end
---  local cfg = _G.current_debug_config
---
---  if cfg.type == "local" then
---    -- just connect dap directly, no gdbserver needed
---    require("dap").run({
---      name    = cfg.name,
---      type    = "cppdbg",
---      request = "launch",
---      program = cfg.binary_local,
---      cwd     = "${workspaceFolder}",
---      stopAtEntry = false,
---      MIMode = "gdb",
---      miDebuggerPath = cfg.miDebuggerPath,
---      filterStderr = false,
---      filterStdout = false,
---      exceptionHandling = {
---        exceptionBreakpointFilters = {}
---      },
---      logging = {
---        engineLogging = false,
---        traceResponse = false,
---      },
---      setupCommands = {
---        {
---          description    = "Load .gdbinit",
---          text           = "source " .. cfg.gdbinitPath,
---          ignoreFailures = true,
---        },
---        {
---          description    = "Enable pretty printing",
---          text           = "set print pretty on",
---          ignoreFailures = false,
---        },
---        {
---          description    = "Enable dynamic pretty printing",
---          text           = "-enable-pretty-printing",
---          ignoreFailures = false,
---        },
---      },
---    })
---  elseif cfg.type == "remote" then
---    -- existing remote gdbserver launch code
---    local sshpass = "sshpass -p '" .. cfg.target_password .. "' "
---    local ssh = sshpass .. "ssh -o StrictHostKeyChecking=no " .. cfg.target_user .. "@" .. cfg.target_ip
---
---    vim.notify("Killing existing gdbserver...", vim.log.levels.INFO)
---    os.execute(ssh .. " 'killall gdbserver' 2>/dev/null")
---    os.execute(ssh .. " 'killall " .. vim.fn.fnamemodify(cfg.binary_remote, ":t") .. "' 2>/dev/null")
---
---    vim.notify("Starting gdbserver...", vim.log.levels.INFO)
---    os.execute(ssh .. " 'DISPLAY=:0.0 nohup gdbserver 0.0.0.0:" .. cfg.target_port .. " " .. cfg.binary_remote .. " > /tmp/gdbserver.log 2>&1 &'")
---
---    vim.defer_fn(function()
---      local check = os.execute(ssh .. " 'ps | grep [g]dbserver > /dev/null 2>&1'")
---      if check ~= 0 then
---        vim.notify("gdbserver failed to start! Check /tmp/gdbserver.log on target.", vim.log.levels.ERROR)
---        return
---      end
---      vim.notify("gdbserver running, connecting...", vim.log.levels.INFO)
---      require("dap").run({
---        name    = cfg.name,
---        type    = "cppdbg",
---        request = "launch",
---        program = cfg.binary_local,
---        miDebuggerPath = cfg.miDebuggerPath,
---        miDebuggerServerAddress = cfg.target_ip .. ":" .. cfg.target_port,
---        cwd     = "${workspaceFolder}",
---        stopAtEntry = false,
---        filterStderr = false,
---        filterStdout = false,
---        exceptionHandling = {
---          exceptionBreakpointFilters = {}
---        },
---        logging = {
---          engineLogging = false,
---          traceResponse = false,
---        },
---        setupCommands = {
---          {
---            description    = "Load .gdbinit",
---            text           = "source " .. cfg.gdbinitPath,
---            ignoreFailures = true,
---          },
---          {
---            description    = "Enable pretty printing",
---            text           = "set print pretty on",
---            ignoreFailures = false,
---          },
---          {
---            description    = "Enable dynamic pretty printing",
---            text           = "-enable-pretty-printing",
---            ignoreFailures = false,
---          },
---        },
---      })
---    end, 2000)
---  else
---    vim.notify("Unknown debug config type: " .. tostring(cfg.type), vim.log.levels.ERROR)
---  end
---end
 
 local function launch_debug()
   if not _G.current_debug_config then
@@ -983,11 +861,25 @@ vim.api.nvim_create_autocmd("BufReadPost", {
 vim.keymap.set("n", "<leader>bs", save_breakpoints, {desc="Debug Save Breakpoints"})
 vim.keymap.set("n", "<leader>bL", load_breakpoints, {desc="Debug Load Breakpoints"})
 
---local local_config = vim.fn.getcwd() .. "/.nvim.lua"
---if vim.fn.filereadable(local_config) == 1 then
---  vim.cmd("luafile " .. local_config)
---end
+local function run_program()
+  local cfg = _G.current_debug_config
+  if not cfg then
+    vim.notify("No debug config loaded.", vim.log.levels.ERROR)
+    return
+  end
+  if cfg.type == "local" then
+    vim.cmd("botright 15split | term " .. cfg.binary_local)
+    vim.cmd("normal! G")
+  elseif cfg.type == "remote" then
+    local sshpass = "sshpass -p '" .. cfg.target_password .. "' "
+    local ssh = sshpass .. "ssh -o StrictHostKeyChecking=no " .. cfg.target_user .. "@" .. cfg.target_ip
+    local display = cfg.display and ("DISPLAY=" .. cfg.display .. " ") or ""
+    vim.cmd("botright 15split | term " .. ssh .. " '" .. display .. cfg.binary_remote .. "'")
+    vim.cmd("normal! G")
+  end
+end
 
+vim.keymap.set("n", "<leader>rr", run_program, { desc = "Run program" })
 
 -- =========================
 -- DAP keymaps
