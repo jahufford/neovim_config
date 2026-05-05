@@ -205,79 +205,106 @@ local function attach_keymaps(buf, win, line_map, frameId, prev_win, session)
       variablesReference = node.variablesReference,
     }, function(err3, child_vars)
       if err3 or not child_vars then return end
-      vim.schedule(function()
-        local child_lines = {}
-        local new_entries = {}
-        local child_indent = (node.indent or "") .. "  "
+      
+      local variables = child_vars.variables
+      local pending = #variables
+      local display_values = {}
+      local child_indent = (node.indent or "") .. "  "
 
-        for _, var in ipairs(child_vars.variables) do
-          local is_string = var.type and (
-            var.type:find("string") ~= nil or
-            var.type:find("char") ~= nil
-          )
-          local display_val = (var.variablesReference ~= 0 and not is_string) and "{...}" or (var.value or "")
-          local child_line = string.format("%s  %-28s = %s", child_indent, var.name, display_val)
-          --local child_line = string.format("%s  %-28s = %s", child_indent, var.name, (var.variablesReference ~= 0) and "{...}" or (var.value or ""))
-          table.insert(child_lines, child_line)
-          local child_node = {
-            name             = var.name,
-            value            = var.value,
-            evaluateName     = var.evaluateName,
-            type             = var.type,
-            variablesReference = var.variablesReference,
-            is_complex       = var.variablesReference ~= 0,
-            is_pointer       = var.type and var.type:find("%*") ~= nil,
-            indent           = child_indent,
-            parent           = node,  -- link to parent
-          }
-          table.insert(new_entries, child_node)
-        end
+      local function render_children()
+        vim.schedule(function()
+          local child_lines = {}
+          local new_entries = {}
 
-        vim.bo[buf].modifiable = true
-        vim.api.nvim_buf_set_lines(buf, line_num, line_num, false, child_lines)
-        vim.bo[buf].modifiable = false
-
-        -- update line_map
-        local shift = #child_lines
-        local new_map = {}
-        for k, v in pairs(line_map) do
-          if k > line_num then
-            new_map[k + shift] = v
-          else
-            new_map[k] = v
+          for i, var in ipairs(variables) do
+            local is_string = var.type and (
+              var.type:find("string") ~= nil or
+              var.type:find("char") ~= nil
+            )
+            local display_val = display_values[i] or (var.variablesReference ~= 0 and not is_string and "{...}") or var.value or ""
+            local child_line = string.format("%s  %-28s = %s", child_indent, var.name, display_val)
+            table.insert(child_lines, child_line)
+            local child_node = {
+              name               = var.name,
+              value              = var.value,
+              evaluateName       = var.evaluateName,
+              type               = var.type,
+              variablesReference = var.variablesReference,
+              is_complex         = var.variablesReference ~= 0 and not is_string,
+              is_pointer         = var.type and var.type:find("%*") ~= nil,
+              indent             = child_indent,
+              parent             = node,
+            }
+            table.insert(new_entries, child_node)
           end
-        end
-        for i, child_node in ipairs(new_entries) do
-          new_map[line_num + i] = child_node
-        end
-        for k in pairs(line_map) do line_map[k] = nil end
-        for k, v in pairs(new_map) do line_map[k] = v end
 
-        -- highlights
-        for i, child_node in ipairs(new_entries) do
-          local li = line_num + i - 1
-          if not child_node.is_complex then
-            local child_line = child_lines[i]
-            local eq = child_line:find("=")
-            if eq then
-              vim.api.nvim_buf_add_highlight(buf, -1, "Identifier", li, 0, eq - 1)
-              vim.api.nvim_buf_add_highlight(buf, -1, "String", li, eq, -1)
+          vim.bo[buf].modifiable = true
+          vim.api.nvim_buf_set_lines(buf, line_num, line_num, false, child_lines)
+          vim.bo[buf].modifiable = false
+
+          local shift = #child_lines
+          local new_map = {}
+          for k, v in pairs(line_map) do
+            if k > line_num then
+              new_map[k + shift] = v
+            else
+              new_map[k] = v
             end
-          else
-            vim.api.nvim_buf_add_highlight(buf, -1, "Identifier", li, 0, -1)
           end
-        end
+          for i, child_node in ipairs(new_entries) do
+            new_map[line_num + i] = child_node
+          end
+          for k in pairs(line_map) do line_map[k] = nil end
+          for k, v in pairs(new_map) do line_map[k] = v end
 
-      -- after expanding, resize window
-      vim.schedule(function()
-        resize_win()
-      end)
-      end)
+          for i, child_node in ipairs(new_entries) do
+            local li = line_num + i - 1
+            if not child_node.is_complex then
+              local child_line = child_lines[i]
+              local eq = child_line:find("=")
+              if eq then
+                vim.api.nvim_buf_add_highlight(buf, -1, "Identifier", li, 0, eq - 1)
+                vim.api.nvim_buf_add_highlight(buf, -1, "String", li, eq, -1)
+              end
+            else
+              vim.api.nvim_buf_add_highlight(buf, -1, "Identifier", li, 0, -1)
+            end
+          end
+
+          resize_win()
+        end)
+      end
+
+      -- fetch hover values for complex types
+      if pending == 0 then
+        render_children()
+        return
+      end
+
+      for i, var in ipairs(variables) do
+        if var.variablesReference ~= 0 and var.evaluateName then
+          cur_session:request("evaluate", {
+            expression = var.evaluateName,
+            context = "hover",
+            frameId = frameId,
+          }, function(_, hover_resp)
+            if hover_resp and hover_resp.result then
+              display_values[i] = hover_resp.result
+            end
+            pending = pending - 1
+            if pending == 0 then render_children() end
+          end)
+        else
+          display_values[i] = var.value
+          pending = pending - 1
+          if pending == 0 then render_children() end
+        end
+      end
     end)
   end, { buffer = buf, nowait = true })
 end
 
-local function open_window(expr, type_str, variables, frameId, prev_win, session, root_node)
+local function open_window(expr, type_str, variables, display_values, frameId, prev_win, session, root_node)
   vim.api.nvim_set_hl(0, "Cursor", { fg = "#000000", bg = "#FF00FF" })
   vim.api.nvim_set_hl(0, "CursorIM", { fg = "#000000", bg = "#FF00FF" })
   vim.opt.guicursor = "n-v-c:block,i-ci-ve:ver25,r-cr:hor20,o:hor50,a:Cursor/lCursor"
@@ -287,14 +314,15 @@ local function open_window(expr, type_str, variables, frameId, prev_win, session
   table.insert(lines, expr .. ": " .. (type_str or ""))
   table.insert(lines, string.rep("─", 63))
 
-  for _, var in ipairs(variables) do
+  for i, var in ipairs(variables) do
     local is_string = var.type and (
       var.type:find("string") ~= nil or
       var.type:find("char") ~= nil
-    ) 
-    local display_value = (var.variablesReference ~= 0 and not is_string) and "{...}" or (var.value or "")
+    )
+    local display_value = display_values[i] or (var.variablesReference ~= 0 and not is_string and "{...}") or var.value or ""
     local line_text = string.format("  %-30s = %s", var.name, display_value)
     table.insert(lines, line_text)
+
     local is_string = var.type and (
         var.type:find("string") ~= nil or
         var.type:find("char") ~= nil
@@ -444,16 +472,47 @@ function M.open()
         vim.notify("Could not get variables", vim.log.levels.ERROR)
         return
       end
-      vim.schedule(function()
-        -- create root node
-        local root_node = {
-          name       = expr,
-          type       = response.type,
-          is_pointer = response.type and response.type:find("%*") ~= nil,
-          parent     = nil,
-        }
-        open_window(expr, response.type, vars_response.variables, frameId, prev_win, session, root_node)
-      end)
+
+  -- fetch pretty printed values for all variables before opening window
+      local variables = vars_response.variables
+      local pending = #variables
+      local display_values = {}
+      
+      local root_node = {
+        name       = expr,
+        type       = response.type,
+        is_pointer = response.type and response.type:find("%*") ~= nil,
+        parent     = nil,
+      }
+      
+      for i, var in ipairs(variables) do
+        if var.variablesReference ~= 0 then
+          session:request("evaluate", {
+            expression = var.evaluateName,
+            context = "hover",
+            frameId = frameId,
+          }, function(_, hover_resp)
+            if hover_resp and hover_resp.result then
+              display_values[i] = hover_resp.result
+            end
+            pending = pending - 1
+            if pending == 0 then
+              vim.schedule(function()
+                open_window(expr, response.type, variables, display_values, frameId, prev_win, session, root_node)
+              end)
+            end
+          end)
+        else
+          display_values[i] = var.value
+          pending = pending - 1
+          if pending == 0 then
+            vim.schedule(function()
+              open_window(expr, response.type, variables, display_values, frameId, prev_win, session, root_node)
+            end)
+          end
+        end
+      end
+
     end)
   end)
 end
