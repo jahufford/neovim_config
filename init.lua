@@ -335,6 +335,12 @@ local function build(clean)
       local bufnr = term_bufnr
       vim.cmd("cgetbuffer " .. bufnr)
       vim.fn.timer_start(100, function()
+      -- remove empty quickfix entries
+      local qflist = vim.fn.getqflist()
+      local filtered = vim.tbl_filter(function(item)
+        return item.text and item.text:match("%S")  -- keep only non-empty lines
+      end, qflist)
+      vim.fn.setqflist(filtered)
           vim.cmd("bdelete! " .. bufnr)
           vim.cmd("botright 15copen")
           vim.cmd("normal! G") -- jump to bottom
@@ -343,6 +349,7 @@ local function build(clean)
     end,
   })
 end
+
 
 vim.api.nvim_create_autocmd("FileType", {
   pattern = "qf",
@@ -398,11 +405,11 @@ local function select_target()
 end
 
 
-vim.keymap.set("n", "<leader>bt", select_target, {desc="Build: Select Target"})  -- "build target"
+vim.keymap.set("n", "<leader>pt", select_target, {desc="Build: Select Target"})  -- "build target"
 --vim.keymap.set("n", "<leader>bt", function() vim.notify("bt pressed") end)
 vim.keymap.set("n", "<C-b>", function() build(false) end, { desc = "Build" })
-vim.keymap.set("n", "<leader>bb", function() build(false) end, { desc = "Build" })
-vim.keymap.set("n", "<leader>bc", function() build(true) end, { desc = "Clean Build" })
+vim.keymap.set("n", "<leader>pb", function() build(false) end, { desc = "Build" })
+vim.keymap.set("n", "<leader>pc", function() build(true) end, { desc = "Clean Build" })
 
 -- =========================
 -- Terminal toggle
@@ -457,6 +464,49 @@ end, {desc="Toggle Fullscreen Terminal"})
 
 -- Escape to get out of terminal insert mode without killing it
 vim.keymap.set("t", "jk", "<C-\\><C-n>", {desc="Escape insert mode in Terminal"})
+
+local float_term_win = nil
+local float_term_buf = nil
+
+vim.keymap.set("n", "<leader>tf", function()
+  if float_term_win and vim.api.nvim_win_is_valid(float_term_win) then
+    -- if already open, focus it
+    vim.api.nvim_set_current_win(float_term_win)
+    vim.cmd("startinsert")
+    return
+  end
+  if float_term_win and vim.api.nvim_win_is_valid(float_term_win) then
+    vim.api.nvim_win_close(float_term_win, true)
+    float_term_win = nil
+    float_term_buf = nil
+    return
+  end
+
+  local width = math.floor(vim.o.columns * 0.4)
+  local height = math.floor(vim.o.lines * 0.4)
+  float_term_buf = vim.api.nvim_create_buf(false, true)
+  float_term_win = vim.api.nvim_open_win(float_term_buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    row = math.floor(0),
+    col = math.floor((vim.o.columns - width)),
+    style = "minimal",
+    border = "rounded",
+    title = " Terminal ",
+    title_pos = "center",
+  })
+  vim.cmd("term")
+  float_term_buf = vim.api.nvim_get_current_buf()
+  vim.cmd("startinsert")
+end, { desc = "Toggle Float Terminal" })
+
+vim.keymap.set("t", "<leader>tf", function()
+  if float_term_win and vim.api.nvim_win_is_valid(float_term_win) then
+    vim.api.nvim_win_close(float_term_win, true)
+    float_term_win = nil
+  end
+end, { desc = "Toggle Float Terminal" })
 
 
 -- =========================
@@ -902,7 +952,13 @@ vim.keymap.set("n", "<F9>", function()
 end)  -- toggle breakpoint
 --vim.keymap.set("n", "<leader>dr", dap.repl.open, {desc="Debug: Open Repl"})     -- debug console
 vim.keymap.set("n", "<leader>du", dapui.toggle, {desc="Debug: Toggile Dap UI"})      -- toggle UI manually
-vim.keymap.set("n", "<leader>dx", dap.terminate, {desc="Debug: Terminate"})     -- stop debugging
+--vim.keymap.set("n", "<leader>dx", dap.terminate, {desc="Debug: Terminate"})     -- stop debugging
+vim.keymap.set("n", "<leader>dx", function()
+  dap.terminate()
+  dapui.toggle()
+  dapui.close()
+end, { desc = "Debug: Terminate" })
+
 vim.keymap.set("n", "<leader>dbc", function()         -- conditional breakpoint
   dap.set_breakpoint(vim.fn.input("Condition: "))
 end, {desc="Debug: Conditional Breakpoint"})
@@ -1416,7 +1472,7 @@ local function new_cpp_pair()
   end)
 end
 
-vim.keymap.set("n", "<leader>pn", new_project,  { desc = "New project scaffold" })
-vim.keymap.set("n", "<leader>ph", new_header,   { desc = "New header file" })
-vim.keymap.set("n", "<leader>pc", new_cpp_pair, { desc = "New cpp+header pair" })
+vim.keymap.set("n", "<leader>pn", new_project,  { desc = "New Project Scaffold" })
+vim.keymap.set("n", "<leader>ph", new_header,   { desc = "New Header File" })
+vim.keymap.set("n", "<leader>pp", new_cpp_pair, { desc = "New cpp+header Pair" })
 
